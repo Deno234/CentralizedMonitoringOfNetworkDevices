@@ -1,0 +1,8 @@
+1. Problem: Kako jedinstveno identificirati (voditi JSON podatke u 'devices.json') uređaje?
+Rješenje: MAC adresa je u većini slučajeva jedinstvena. Problem s IP adresom u mreži je da DHCP postavka može svaki puta dodijeliti drugačiju IP adresu uređaju
+pri spajanju na mrežu. Postoji i DHCP rezervacija koja omogućuje istu IP adresu svaki puta uređaju. Međutim, radi jednostavnosti odlučio sam se za MAC identifikaciju
+uređaja.
+
+2. Problem: Nemogućnost pinganja laptopa (a mogu pingati sve ostale uređaje).
+Rješenje: Potrebno je u 'Windows Defender Firewall with Advanced Security' omogućiti 'File and Printer Sharing (ICMPv4 In & Out)' unutar 'Inbound & Outbound Rules'.
+Također, to neće riješiti problem ako u Postavke -> Mreža i Internet -> WiFi (ili Ethernet), mrežni profil nije postavljen na 'Privatno'.
