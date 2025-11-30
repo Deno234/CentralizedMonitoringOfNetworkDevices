@@ -5,6 +5,7 @@ from datetime import datetime # To retrieve and format the current time
 from utils.ping import ping # For testing device availability
 from utils.arp_scan import get_arp_table # For retrieving the ARP table
 from utils.local_ip import get_local_ip # For retrieving one's own local IP address
+from db import init_db, save_ping_result
 
 # Defines the interval between device rechecks (every 5 seconds)
 CHECK_INTERVAL = 5
@@ -25,17 +26,18 @@ def print_status(device_name, status, ip=None):
 
 
 """
-1. Loads the ARP table
+1. Loads the ARP table and initializes database
 2. For each device from the JSON file:
     2.1. Normalizes the MAC address.
-    2.2. If the device is marked as 'self' (local computer), it retrieves the local IP and considers it online.
+    2.2. If the device is marked as 'self' (local computer), it retrieves the local IP, considers it online and saves to db.
     2.3. Otherwise, it looks for the MAC in the ARP table.
-    2.4. If there is an IP, it pings the device and prints the status.
-    2.5. If there is no MAC in the ARP table, it says that it is offline.
+    2.4. If there is an IP, it pings the device, prints the status and saves to db.
+    2.5. If there is no MAC in the ARP table, it says that it is offline and saves to db.
     2.6. Pauses for 5 seconds between iterations.
 """
 def main():
     devices = load_devices()
+    init_db()
     print("Pokrećem ping monitor s MAC identifikacijom...\n")
 
     while True:
@@ -49,15 +51,17 @@ def main():
                 ip = get_local_ip()
                 status = True
                 print_status(name, status, ip)
+                save_ping_result(name, mac, ip, status)
                 continue
 
             if mac in arp_table:
                 ip = arp_table[mac]
                 reachable = ping(ip)
                 print_status(name, reachable, ip)
-
+                save_ping_result(name, mac, ip, reachable)
             else:
                 print_status(name, False)
+                save_ping_result(name, mac, None, False)
 
         time.sleep(CHECK_INTERVAL)
 
