@@ -86,8 +86,8 @@ devices = api_get("/api/devices") or []
 ping_logs = api_get("/api/ping_logs") or []
 metrics_logs = api_get("/api/metrics_logs") or []
 
-# Initialize anomaly detector
-detector = AnomalyDetector()
+# REMOVED GLOBAL DETECTOR - This was the bug!
+# Each device analysis should create its own detector
 
 # ---------- SUMMARY METRICS ----------
 col1, col2, col3, col4 = st.columns(4)
@@ -96,7 +96,7 @@ with col1:
     st.metric("Total Devices", len(devices))
 
 with col2:
-    # FIXED: Check if device was seen recently (within last 2 minutes)
+    # Check if device was seen recently (within last 2 minutes)
     online_devices = 0
     for d in devices:
         if d.get('last_seen'):
@@ -165,15 +165,14 @@ st.header("🖥️ Devices Overview")
 
 
 def status_icon(last_seen):
-    """FIXED: Properly check device online status"""
+    """Check device online status"""
     if last_seen is None:
         return "⚪ Unknown"
 
     try:
-        last_seen_time_2 = datetime.fromisoformat(last_seen)
-        time_diff = datetime.now() - last_seen_time_2
+        last_seen_time = datetime.fromisoformat(last_seen)
+        time_diff = datetime.now() - last_seen_time
 
-        # Check if device was seen in last 2 minutes
         if time_diff < timedelta(minutes=2):
             return "🟢 Online"
         elif time_diff < timedelta(minutes=10):
@@ -254,6 +253,8 @@ if devices:
 
         with st.spinner("Analyzing device metrics for anomalies..."):
             try:
+                # FIXED: Create fresh detector instance for THIS device
+                detector = AnomalyDetector(contamination=0.1)
                 anomaly_summary = detector.get_anomaly_summary(selected_device_id)
 
                 if anomaly_summary['total_anomalies'] > 0:
@@ -290,13 +291,11 @@ if devices:
     st.divider()
 
     # ---------- METRICS VISUALIZATION ----------
-    # FIXED: Properly filter metrics by device_id
+    # Filter metrics by device_id
     device_metrics = [m for m in metrics_logs if m['device_id'] == selected_device_id]
 
-    st.write(f"**Found {len(device_metrics)} metric records for this device**")
-
     if device_metrics:
-        st.subheader("📈 System Metrics")
+        st.subheader(f"📈 System Metrics ({len(device_metrics)} records)")
 
         df_metrics = pd.DataFrame(device_metrics)
         df_metrics['timestamp'] = pd.to_datetime(df_metrics['timestamp'])
@@ -338,27 +337,51 @@ if devices:
                            annotation_text="Critical (95%)")
         st.plotly_chart(fig_disk, use_container_width=True)
 
-        # Network traffic
+        # Network traffic (now showing bytes/sec rate)
         fig_network = go.Figure()
-        fig_network.add_trace(go.Scatter(x=df_metrics['timestamp'], y=df_metrics['net_sent'],
-                                         mode='lines', name='Sent',
-                                         line=dict(color='blue')))
-        fig_network.add_trace(go.Scatter(x=df_metrics['timestamp'], y=df_metrics['net_recv'],
-                                         mode='lines', name='Received',
-                                         line=dict(color='green')))
-        fig_network.update_layout(title=f'Network Traffic (bytes) - {selected_device["name"]}',
-                                  xaxis_title='Time',
-                                  yaxis_title='Bytes')
+        fig_network.add_trace(go.Scatter(
+            x=df_metrics['timestamp'],
+            y=df_metrics['net_sent'],
+            mode='lines',
+            name='Upload',
+            line=dict(color='blue')
+        ))
+        fig_network.add_trace(go.Scatter(
+            x=df_metrics['timestamp'],
+            y=df_metrics['net_recv'],
+            mode='lines',
+            name='Download',
+            line=dict(color='green')
+        ))
+        fig_network.update_layout(
+            title=f'Network Traffic Rate (bytes/sec) - {selected_device["name"]}',
+            xaxis_title='Time',
+            yaxis_title='Bytes/Second'
+        )
         st.plotly_chart(fig_network, use_container_width=True)
 
     else:
         st.info(
-            f"ℹ️ No metrics data available for {selected_device['name']} yet. Make sure the agent is running on this device.")
-        st.write("**Device ID:**", selected_device_id)
-        st.write("**All metrics in database:**")
-        # Show all device IDs that have metrics for debugging
-        unique_device_ids = set(m['device_id'] for m in metrics_logs)
-        st.write(f"Devices with metrics: {unique_device_ids}")
+            f"ℹ️ No metrics data available for {selected_device['name']} yet. "
+            f"Make sure the agent is running on this device."
+        )
+        st.write("**Debugging Info:**")
+        st.write(f"- Selected Device ID: {selected_device_id}")
+        st.write(f"- Selected Device MAC: {selected_device['mac']}")
+
+        # Show all device IDs that have metrics
+        if metrics_logs:
+            unique_device_ids = set(m['device_id'] for m in metrics_logs)
+            st.write(f"- Device IDs with metrics: {unique_device_ids}")
+
+            # Show device MAC addresses for comparison
+            st.write("**All devices in database:**")
+            for dev in devices:
+                has_metrics = dev['id'] in unique_device_ids
+                status_emoji = "✅" if has_metrics else "❌"
+                st.write(f"  {status_emoji} ID {dev['id']}: {dev['name']} ({dev['mac']})")
+        else:
+            st.write("- No metrics in database at all")
 
 st.divider()
 
@@ -409,10 +432,15 @@ if st_autorefresh:
 else:
     st.caption("🔄 Auto-refresh disabled")
 
-# Debug info (can be removed in production)
+# Debug info
 with st.expander("🔧 Debug Information"):
-    st.write("**Total devices in DB:**", len(devices))
-    st.write("**Total ping logs:**", len(ping_logs))
-    st.write("**Total metrics logs:**", len(metrics_logs))
-    if metrics_logs:
-        st.write("**Device IDs with metrics:**", set(m['device_id'] for m in metrics_logs))
+    st.write("**Database Contents:**")
+    st.write(f"- Total devices: {len(devices)}")
+    st.write(f"- Total ping logs: {len(ping_logs)}")
+    st.write(f"- Total metrics logs: {len(metrics_logs)}")
+
+    if devices:
+        st.write("\n**Device Details:**")
+        for d in devices:
+            metric_count = len([m for m in metrics_logs if m['device_id'] == d['id']])
+            st.write(f"- ID {d['id']}: {d['name']} | MAC: {d['mac']} | Metrics: {metric_count}")
