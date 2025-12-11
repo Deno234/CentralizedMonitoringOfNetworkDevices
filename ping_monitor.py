@@ -5,11 +5,10 @@ from datetime import datetime # To retrieve and format the current time
 from utils.ping import ping # For testing device availability
 from utils.arp_scan import get_arp_table # For retrieving the ARP table
 from utils.local_ip import get_local_ip # For retrieving one's own local IP address
-from db import init_db, save_ping_result
+from utils.api_client import send_ping
 
 # Defines the interval between device rechecks (every 5 seconds)
 CHECK_INTERVAL = 5
-
 
 # Loads from the 'devices.json' file information about devices, as a list of dictionary objects
 def load_devices():
@@ -37,7 +36,6 @@ def print_status(device_name, status, ip=None):
 """
 def main():
     devices = load_devices()
-    init_db()
     print("Pokrećem ping monitor s MAC identifikacijom...\n")
 
     while True:
@@ -51,17 +49,38 @@ def main():
                 ip = get_local_ip()
                 status = True
                 print_status(name, status, ip)
-                save_ping_result(name, mac, ip, status)
+
+                send_ping(
+                    mac=mac,
+                    name=name,
+                    status=1,
+                    ip=ip,
+                    latency=None
+                )
                 continue
 
             if mac in arp_table:
                 ip = arp_table[mac]
                 reachable = ping(ip)
                 print_status(name, reachable, ip)
-                save_ping_result(name, mac, ip, reachable)
+
+                send_ping(
+                    mac=mac,
+                    name=name,
+                    status=1 if reachable else 0,
+                    ip=ip,
+                    latency=None
+                )
             else:
                 print_status(name, False)
-                save_ping_result(name, mac, None, False)
+
+                send_ping(
+                    mac=mac,
+                    name=name,
+                    status=0,
+                    ip=None,
+                    latency=None
+                )
 
         time.sleep(CHECK_INTERVAL)
 
