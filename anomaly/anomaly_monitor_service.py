@@ -30,7 +30,6 @@ def monitor_anomalies():
     Continuously monitor all devices for anomalies
     Runs in background and saves detected anomalies to database
     """
-    detector = AnomalyDetector(contamination=0.1)
 
     print("🔍 Anomaly Monitor Service Started")
     print(f"Checking for anomalies every {CHECK_INTERVAL} seconds\n")
@@ -57,6 +56,8 @@ def monitor_anomalies():
 
                 try:
                     # Run all anomaly detection methods
+                    detector = AnomalyDetector(contamination=0.1)
+
                     anomaly_results = detector.detect_all_anomalies(device_id)
 
                     # Process and save each detected anomaly

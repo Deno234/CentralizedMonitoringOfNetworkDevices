@@ -1,88 +1,181 @@
-import json # To work with JSON files
-import time # For breaks between checks
-from datetime import datetime # To retrieve and format the current time
+import json
+import time
+from datetime import datetime
+import sys
 
-from utils.ping import ping # For testing device availability
-from utils.arp_scan import get_arp_table # For retrieving the ARP table
-from utils.local_ip import get_local_ip # For retrieving one's own local IP address
+# Ensure these match your actual folder structure (e.g., utils folder)
+from utils.ping import ping
+from utils.network_scanner import get_arp_table_enhanced, discover_devices
+from utils.local_ip import get_local_ip
 from utils.api_client import send_ping
 
-# Defines the interval between device rechecks (every 5 seconds)
+# Interval between device checks (seconds)
 CHECK_INTERVAL = 5
 
-# Loads from the 'devices.json' file information about devices, as a list of dictionary objects
+# Perform full network sweep every N iterations (to discover new devices)
+SWEEP_EVERY_N_ITERATIONS = 12  # Every 60 seconds if CHECK_INTERVAL = 5
+
+iteration_count = 0
+
+
 def load_devices():
-    with open("devices.json", "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Load devices from JSON configuration file"""
+    try:
+        with open("devices.json", "r", encoding="utf-8") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        print("❌ Error: devices.json not found!")
+        sys.exit(1)
+    except json.JSONDecodeError as e:
+        print(f"❌ Error parsing devices.json: {e}")
+        sys.exit(1)
 
 
-# Formats and prints the device status with time, name, optional IP address and status (ONLINE/OFFLINE)
-def print_status(device_name, status, ip=None):
+def print_status(device_name, status, ip=None, mac=None):
+    """Print formatted device status"""
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    state = "ONLINE" if status else "OFFLINE"
+    state = "🟢 ONLINE " if status else "🔴 OFFLINE"
     ip_info = f" @ {ip}" if ip else ""
-    print(f"[{ts}] {device_name}{ip_info} -> {state}")
+    mac_info = f" [{mac}]" if mac else ""
+    print(f"[{ts}] {state} - {device_name}{ip_info}{mac_info}")
 
 
-"""
-1. Loads the ARP table and initializes database
-2. For each device from the JSON file:
-    2.1. Normalizes the MAC address.
-    2.2. If the device is marked as 'self' (local computer), it retrieves the local IP, considers it online and saves to db.
-    2.3. Otherwise, it looks for the MAC in the ARP table.
-    2.4. If there is an IP, it pings the device, prints the status and saves to db.
-    2.5. If there is no MAC in the ARP table, it says that it is offline and saves to db.
-    2.6. Pauses for 5 seconds between iterations.
-"""
+def send_device_status(mac, name, status, ip=None, latency=None):
+    """Send device status to API and handle errors"""
+    success = send_ping(
+        mac=mac,
+        name=name,
+        status=1 if status else 0,
+        ip=ip,
+        latency=latency
+    )
+
+    if not success:
+        print(f"  ⚠️  Warning: Failed to send status for {name} to API")
+
+    return success
+
+
 def main():
+    """Main monitoring loop"""
+    global iteration_count
+
     devices = load_devices()
-    print("Pokrećem ping monitor s MAC identifikacijom...\n")
+
+    print("=" * 70)
+    print("📡 NETWORK PING MONITOR WITH MAC IDENTIFICATION")
+    print("=" * 70)
+    print(f"Monitoring {len(devices)} devices")
+    print(f"Check interval: {CHECK_INTERVAL} seconds")
+    print(f"Full network sweep: every {SWEEP_EVERY_N_ITERATIONS * CHECK_INTERVAL} seconds")
+    print("=" * 70)
+    print()
+
+    # Display configured devices
+    print("Configured devices:")
+    for d in devices:
+        is_self = " (THIS DEVICE)" if d.get("self") else ""
+        print(f"  • {d['name']} - {d['mac']}{is_self}")
+    print()
 
     while True:
-        arp_table = get_arp_table()
+        try:
+            # Perform full sweep periodically to discover new devices
+            perform_sweep = (iteration_count % SWEEP_EVERY_N_ITERATIONS == 0)
 
-        for d in devices:
-            mac = d["mac"].lower().replace("-", ":")
-            name = d["name"]
+            iteration_count += 1
 
-            if d.get("self"):
-                ip = get_local_ip()
-                status = True
-                print_status(name, status, ip)
+            if perform_sweep:
+                print(f"🔍 Performing full network sweep (Scan #{iteration_count})...")
 
-                send_ping(
-                    mac=mac,
-                    name=name,
-                    status=1,
-                    ip=ip,
-                    latency=None
-                )
-                continue
+            # --- FIXED LOGIC HERE ---
+            # We now call discover_devices which handles the sweep if perform_sweep is True
+            arp_table = discover_devices(perform_sweep=perform_sweep)
+            # ------------------------
 
-            if mac in arp_table:
-                ip = arp_table[mac]
-                reachable = ping(ip)
-                print_status(name, reachable, ip)
+            if not arp_table and not perform_sweep:
+                print("⚠️  Warning: ARP table is empty. Network scanning may not be working.")
 
-                send_ping(
-                    mac=mac,
-                    name=name,
-                    status=1 if reachable else 0,
-                    ip=ip,
-                    latency=None
-                )
-            else:
-                print_status(name, False)
+            if not perform_sweep:
+                print(f"\n--- Scan #{iteration_count} ({datetime.now().strftime('%H:%M:%S')}) ---")
 
-                send_ping(
-                    mac=mac,
-                    name=name,
-                    status=0,
-                    ip=None,
-                    latency=None
-                )
+            print(f"Devices in ARP table: {len(arp_table)}")
 
+            devices_checked = 0
+            devices_online = 0
+
+            for d in devices:
+                devices_checked += 1
+
+                # Normalize MAC address (handle both formats)
+                mac = d["mac"].lower().replace("-", ":")
+                name = d["name"]
+
+                # Handle "self" device (the machine running this script)
+                if d.get("self"):
+                    ip = get_local_ip()
+                    status = True
+                    print_status(name, status, ip, mac)
+                    send_device_status(mac, name, status, ip, None)
+                    devices_online += 1
+                    continue
+
+                # Check if device is in ARP table
+                if mac in arp_table:
+                    device_info = arp_table[mac]
+                    ip = device_info['ip']
+
+                    # Ping the device to verify it's actually reachable
+                    # Using 1000ms timeout
+                    reachable = ping(ip, timeout=1000)
+
+                    print_status(name, reachable, ip, mac)
+                    send_device_status(mac, name, reachable, ip, None)
+
+                    if reachable:
+                        devices_online += 1
+                else:
+                    # Device not in ARP table - definitely offline
+                    print_status(name, False, None, mac)
+                    send_device_status(mac, name, False, None, None)
+
+            # Summary
+            devices_offline = devices_checked - devices_online
+            print(f"\n📊 Summary: {devices_online} online, {devices_offline} offline (of {devices_checked} total)")
+
+            # Show unknown devices in ARP table (not in our config)
+            configured_macs = {d["mac"].lower().replace("-", ":") for d in devices}
+            unknown_devices = [
+                (mac, info['ip'])
+                for mac, info in arp_table.items()
+                if mac not in configured_macs
+            ]
+
+            if unknown_devices:
+                print(f"\n🔍 Unknown devices in network ({len(unknown_devices)}):")
+                for mac, ip in unknown_devices[:5]:  # Show first 5
+                    print(f"  • {mac} @ {ip}")
+                if len(unknown_devices) > 5:
+                    print(f"  ... and {len(unknown_devices) - 5} more")
+
+            print()
+
+        except KeyboardInterrupt:
+            print("\n\n⏹️  Monitoring stopped by user")
+            break
+        except Exception as e:
+            print(f"\n❌ Error during monitoring: {e}")
+            import traceback
+            traceback.print_exc()
+            print("Continuing in 5 seconds...")
+
+        # Wait before next check
         time.sleep(CHECK_INTERVAL)
 
+
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\n\n👋 Goodbye!")
+        sys.exit(0)

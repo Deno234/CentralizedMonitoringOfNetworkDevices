@@ -5,6 +5,7 @@ import plotly.graph_objects as go
 import time
 import sys
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from datetime import datetime, timedelta
 from dashboard.utils import api_get
@@ -55,8 +56,8 @@ with st.sidebar:
     enable_anomaly_detection = st.checkbox("Enable Anomaly Detection", value=True)
     detection_method = st.multiselect(
         "Detection Methods",
-        ["z-score", "moving_average", "isolation_forest", "lof"],
-        default=["z-score", "moving_average"]
+        ["z_score", "moving_average", "isolation_forest", "lof"],
+        default=["z_score", "moving_average"]
     )
 
     st.divider()
@@ -95,7 +96,16 @@ with col1:
     st.metric("Total Devices", len(devices))
 
 with col2:
-    online_devices = sum(1 for d in devices if d.get('last_seen'))
+    # FIXED: Check if device was seen recently (within last 2 minutes)
+    online_devices = 0
+    for d in devices:
+        if d.get('last_seen'):
+            try:
+                last_seen_time = datetime.fromisoformat(d['last_seen'])
+                if datetime.now() - last_seen_time < timedelta(minutes=2):
+                    online_devices += 1
+            except:
+                pass
     st.metric("Online Devices", online_devices)
 
 with col3:
@@ -127,9 +137,12 @@ if enable_anomaly_detection:
     for device in devices:
         anomalies = get_all_anomalies(limit=10, device_id=device['id'])
         for anomaly in anomalies:
-            if datetime.fromisoformat(anomaly['timestamp']) > datetime.now() - timedelta(hours=1):
-                anomaly['device_name'] = device['name']
-                recent_anomalies_all.append(anomaly)
+            try:
+                if datetime.fromisoformat(anomaly['timestamp']) > datetime.now() - timedelta(hours=1):
+                    anomaly['device_name'] = device['name']
+                    recent_anomalies_all.append(anomaly)
+            except:
+                pass
 
     if recent_anomalies_all:
         for anomaly in sorted(recent_anomalies_all, key=lambda x: x['timestamp'], reverse=True)[:5]:
@@ -152,25 +165,56 @@ st.header("🖥️ Devices Overview")
 
 
 def status_icon(last_seen):
+    """FIXED: Properly check device online status"""
     if last_seen is None:
         return "⚪ Unknown"
-    # Check if device was seen in last 2 minutes
-    last_seen_time = datetime.fromisoformat(last_seen)
-    if datetime.now() - last_seen_time < timedelta(minutes=2):
-        return "🟢 Online"
-    elif datetime.now() - last_seen_time < timedelta(minutes=10):
-        return "🟡 Recently Online"
-    else:
-        return "🔴 Offline"
+
+    try:
+        last_seen_time_2 = datetime.fromisoformat(last_seen)
+        time_diff = datetime.now() - last_seen_time_2
+
+        # Check if device was seen in last 2 minutes
+        if time_diff < timedelta(minutes=2):
+            return "🟢 Online"
+        elif time_diff < timedelta(minutes=10):
+            return "🟡 Recently Online"
+        else:
+            return "🔴 Offline"
+    except:
+        return "⚪ Unknown"
+
+
+def format_last_seen(last_seen):
+    """Format last seen time in a human-readable way"""
+    if last_seen is None:
+        return "Never"
+
+    try:
+        last_seen_time = datetime.fromisoformat(last_seen)
+        time_diff = datetime.now() - last_seen_time
+
+        if time_diff < timedelta(minutes=1):
+            return "Just now"
+        elif time_diff < timedelta(hours=1):
+            minutes = int(time_diff.total_seconds() / 60)
+            return f"{minutes} min ago"
+        elif time_diff < timedelta(days=1):
+            hours = int(time_diff.total_seconds() / 3600)
+            return f"{hours} hour{'s' if hours > 1 else ''} ago"
+        else:
+            return last_seen_time.strftime("%Y-%m-%d %H:%M:%S")
+    except:
+        return last_seen or "Never"
 
 
 device_rows = []
 for d in devices:
     device_rows.append({
+        "ID": d["id"],
         "Name": d["name"],
         "MAC": d["mac"],
         "Last IP": d["last_ip"] or "N/A",
-        "Last Seen": d["last_seen"] or "Never",
+        "Last Seen": format_last_seen(d["last_seen"]),
         "Status": status_icon(d["last_seen"])
     })
 
@@ -183,7 +227,7 @@ st.divider()
 if devices:
     st.header("📊 Device Details & Metrics")
 
-    device_names = {d['id']: d['name'] for d in devices}
+    device_names = {d['id']: f"{d['name']} (ID: {d['id']})" for d in devices}
     selected_device_id = st.selectbox(
         "Select device for detailed view:",
         options=list(device_names.keys()),
@@ -194,54 +238,62 @@ if devices:
     selected_device = next(d for d in devices if d['id'] == selected_device_id)
 
     # Device info
-    col1, col2, col3 = st.columns(3)
+    col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.write("**Device Name:**", selected_device['name'])
     with col2:
         st.write("**MAC Address:**", selected_device['mac'])
     with col3:
         st.write("**Last IP:**", selected_device['last_ip'] or "N/A")
+    with col4:
+        st.write("**Status:**", status_icon(selected_device['last_seen']))
 
     # ---------- ANOMALY DETECTION FOR SELECTED DEVICE ----------
     if enable_anomaly_detection:
         st.subheader("🔍 Anomaly Detection Results")
 
         with st.spinner("Analyzing device metrics for anomalies..."):
-            anomaly_summary = detector.get_anomaly_summary(selected_device_id)
+            try:
+                anomaly_summary = detector.get_anomaly_summary(selected_device_id)
 
-        if anomaly_summary['total_anomalies'] > 0:
-            col1, col2, col3 = st.columns(3)
-            with col1:
-                st.metric("Total Anomalies", anomaly_summary['total_anomalies'])
-            with col2:
-                st.metric("High Severity", anomaly_summary['high_severity_count'])
-            with col3:
-                st.metric("Medium Severity", anomaly_summary['medium_severity_count'])
+                if anomaly_summary['total_anomalies'] > 0:
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Anomalies", anomaly_summary['total_anomalies'])
+                    with col2:
+                        st.metric("High Severity", anomaly_summary['high_severity_count'])
+                    with col3:
+                        st.metric("Medium Severity", anomaly_summary['medium_severity_count'])
 
-            # Show anomalies by method
-            st.write("**Anomalies by Detection Method:**")
-            methods_df = pd.DataFrame([
-                {"Method": method, "Count": count}
-                for method, count in anomaly_summary['by_method'].items()
-                if count > 0
-            ])
-            if not methods_df.empty:
-                st.dataframe(methods_df, hide_index=True)
+                    # Show anomalies by method
+                    st.write("**Anomalies by Detection Method:**")
+                    methods_df = pd.DataFrame([
+                        {"Method": method.replace('_', ' ').title(), "Count": count}
+                        for method, count in anomaly_summary['by_method'].items()
+                        if count > 0
+                    ])
+                    if not methods_df.empty:
+                        st.dataframe(methods_df, hide_index=True)
 
-            # Detailed anomaly view
-            with st.expander("View Detailed Anomalies"):
-                for method, anomalies in anomaly_summary['detailed_anomalies'].items():
-                    if anomalies and method in detection_method:
-                        st.write(f"**{method.replace('_', ' ').title()}:**")
-                        for anomaly in anomalies[:5]:  # Show first 5
-                            st.json(anomaly)
-        else:
-            st.success("✅ No anomalies detected for this device")
+                    # Detailed anomaly view
+                    with st.expander("View Detailed Anomalies"):
+                        for method, anomalies in anomaly_summary['detailed_anomalies'].items():
+                            if anomalies and method in detection_method:
+                                st.write(f"**{method.replace('_', ' ').title()}:**")
+                                for anomaly in anomalies[:5]:  # Show first 5
+                                    st.json(anomaly)
+                else:
+                    st.success("✅ No anomalies detected for this device")
+            except Exception as e:
+                st.warning(f"⚠️ Could not analyze anomalies: {str(e)}")
 
     st.divider()
 
     # ---------- METRICS VISUALIZATION ----------
+    # FIXED: Properly filter metrics by device_id
     device_metrics = [m for m in metrics_logs if m['device_id'] == selected_device_id]
+
+    st.write(f"**Found {len(device_metrics)} metric records for this device**")
 
     if device_metrics:
         st.subheader("📈 System Metrics")
@@ -250,12 +302,15 @@ if devices:
         df_metrics['timestamp'] = pd.to_datetime(df_metrics['timestamp'])
         df_metrics = df_metrics.sort_values('timestamp')
 
+        # Display data range
+        st.caption(f"Data from {df_metrics['timestamp'].min()} to {df_metrics['timestamp'].max()}")
+
         # CPU and RAM side by side
         col1, col2 = st.columns(2)
 
         with col1:
             fig_cpu = px.line(df_metrics, x='timestamp', y='cpu',
-                              title='CPU Usage (%)',
+                              title=f'CPU Usage (%) - {selected_device["name"]}',
                               labels={'cpu': 'CPU %', 'timestamp': 'Time'})
             fig_cpu.add_hline(y=80, line_dash="dash", line_color="orange",
                               annotation_text="Warning (80%)")
@@ -265,7 +320,7 @@ if devices:
 
         with col2:
             fig_ram = px.line(df_metrics, x='timestamp', y='ram',
-                              title='RAM Usage (%)',
+                              title=f'RAM Usage (%) - {selected_device["name"]}',
                               labels={'ram': 'RAM %', 'timestamp': 'Time'})
             fig_ram.add_hline(y=80, line_dash="dash", line_color="orange",
                               annotation_text="Warning (80%)")
@@ -275,7 +330,7 @@ if devices:
 
         # Disk usage
         fig_disk = px.line(df_metrics, x='timestamp', y='disk',
-                           title='Disk Usage (%)',
+                           title=f'Disk Usage (%) - {selected_device["name"]}',
                            labels={'disk': 'Disk %', 'timestamp': 'Time'})
         fig_disk.add_hline(y=80, line_dash="dash", line_color="orange",
                            annotation_text="Warning (80%)")
@@ -291,13 +346,19 @@ if devices:
         fig_network.add_trace(go.Scatter(x=df_metrics['timestamp'], y=df_metrics['net_recv'],
                                          mode='lines', name='Received',
                                          line=dict(color='green')))
-        fig_network.update_layout(title='Network Traffic (bytes)',
+        fig_network.update_layout(title=f'Network Traffic (bytes) - {selected_device["name"]}',
                                   xaxis_title='Time',
                                   yaxis_title='Bytes')
         st.plotly_chart(fig_network, use_container_width=True)
 
     else:
-        st.info("No metrics data available for this device yet")
+        st.info(
+            f"ℹ️ No metrics data available for {selected_device['name']} yet. Make sure the agent is running on this device.")
+        st.write("**Device ID:**", selected_device_id)
+        st.write("**All metrics in database:**")
+        # Show all device IDs that have metrics for debugging
+        unique_device_ids = set(m['device_id'] for m in metrics_logs)
+        st.write(f"Devices with metrics: {unique_device_ids}")
 
 st.divider()
 
@@ -347,3 +408,11 @@ if st_autorefresh:
     st.caption(f"🔄 Auto-refresh enabled | Next refresh in: {int(time_until_refresh)}s")
 else:
     st.caption("🔄 Auto-refresh disabled")
+
+# Debug info (can be removed in production)
+with st.expander("🔧 Debug Information"):
+    st.write("**Total devices in DB:**", len(devices))
+    st.write("**Total ping logs:**", len(ping_logs))
+    st.write("**Total metrics logs:**", len(metrics_logs))
+    if metrics_logs:
+        st.write("**Device IDs with metrics:**", set(m['device_id'] for m in metrics_logs))

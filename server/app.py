@@ -1,3 +1,7 @@
+import sys
+import os
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from server.db import (
@@ -16,12 +20,14 @@ from anomaly.anomaly_detector import (
     save_anomaly_to_db
 )
 import sqlite3
+from datetime import datetime
 
 app = Flask(__name__)
 CORS(app)
 
-# Initialize anomaly detector
-detector = AnomalyDetector()
+
+# REMOVED GLOBAL DETECTOR - This was the bug!
+# Each request should create its own detector instance
 
 
 @app.route("/api/ping", methods=["POST"])
@@ -39,7 +45,8 @@ def api_ping():
         return jsonify({"error": "Missing mac or status"}), 400
 
     device_id = get_or_create_device(mac, name)
-    update_device_seen(device_id, ip)
+    if status:
+        update_device_seen(device_id, ip)
     save_ping_log(device_id, ip, status, latency)
 
     return jsonify({"message": "Ping stored", "device_id": device_id})
@@ -114,16 +121,19 @@ def api_anomalies():
 def api_detect_anomalies():
     """
     Manually trigger anomaly detection for a specific device
-    Body: {"device_id": 1, "methods": ["z-score", "moving_average"]}
+    Body: {"device_id": 1, "methods": ["z_score", "moving_average"]}
     """
     data = request.json
     device_id = data.get("device_id")
-    methods = data.get("methods", ["z-score", "moving_average", "isolation_forest", "lof"])
+    methods = data.get("methods", ["z_score", "moving_average", "isolation_forest", "lof"])
 
     if not device_id:
         return jsonify({"error": "Missing device_id"}), 400
 
     try:
+        # FIXED: Create fresh detector instance for each request
+        detector = AnomalyDetector(contamination=0.1)
+
         # Run detection
         results = detector.detect_all_anomalies(device_id)
 
@@ -159,6 +169,8 @@ def api_anomaly_summary():
     device_id = request.args.get('device_id', type=int)
 
     if device_id:
+        # FIXED: Create fresh detector instance
+        detector = AnomalyDetector(contamination=0.1)
         summary = detector.get_anomaly_summary(device_id)
         return jsonify(summary)
     else:
@@ -166,8 +178,10 @@ def api_anomaly_summary():
         devices = get_all_devices()
         summaries = []
 
+        # FIXED: Create one detector per device to avoid cross-contamination
         for device in devices:
             try:
+                detector = AnomalyDetector(contamination=0.1)
                 summary = detector.get_anomaly_summary(device['id'])
                 summary['device_name'] = device['name']
                 summaries.append(summary)
@@ -185,7 +199,9 @@ def api_anomaly_summary():
 def api_acknowledge_anomaly(anomaly_id):
     """Mark an anomaly as acknowledged"""
     try:
-        conn = sqlite3.connect("monitor.db")
+        # Use proper DB path
+        db_path = os.path.join(os.path.dirname(__file__), "monitor.db")
+        conn = sqlite3.connect(db_path)
         c = conn.cursor()
 
         c.execute(
@@ -210,7 +226,9 @@ def api_acknowledge_anomaly(anomaly_id):
 def api_statistics():
     """Get overall system statistics"""
     try:
-        conn = sqlite3.connect("monitor.db")
+        # Use proper DB path
+        db_path = os.path.join(os.path.dirname(__file__), "monitor.db")
+        conn = sqlite3.connect(db_path)
         c = conn.cursor()
 
         # Device stats
@@ -265,28 +283,6 @@ def api_health():
 
 
 if __name__ == "__main__":
-    from datetime import datetime
-
     init_db()
-
-    # Create anomalies table
-    conn = sqlite3.connect("monitor.db")
-    c = conn.cursor()
-    c.execute('''
-              CREATE TABLE IF NOT EXISTS anomalies
-              (
-                  id               INTEGER PRIMARY KEY AUTOINCREMENT,
-                  timestamp        TEXT    NOT NULL,
-                  device_id        INTEGER NOT NULL,
-                  detection_method TEXT    NOT NULL,
-                  severity         TEXT    NOT NULL,
-                  details          TEXT    NOT NULL,
-                  acknowledged     INTEGER DEFAULT 0,
-                  FOREIGN KEY (device_id) REFERENCES devices (id)
-              )
-              ''')
-    conn.commit()
-    conn.close()
-
     print("🚀 Starting Flask API server with anomaly detection...")
     app.run(host="0.0.0.0", port=5000, debug=True)

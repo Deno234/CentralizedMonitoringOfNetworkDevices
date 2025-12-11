@@ -3,9 +3,11 @@ from sklearn.ensemble import IsolationForest
 from sklearn.neighbors import LocalOutlierFactor
 from datetime import datetime, timedelta
 import sqlite3
-from typing import List, Dict, Tuple
+import os
+from typing import List, Dict
 
-DB_NAME = "monitor.db"
+# Use relative path to database
+DB_PATH = "monitor.db"
 
 
 class AnomalyDetector:
@@ -15,6 +17,9 @@ class AnomalyDetector:
 
         Args:
             contamination: Expected proportion of outliers (default 10%)
+
+        IMPORTANT: Each AnomalyDetector instance should be used for ONE device only.
+        Create a new instance for each device to avoid model contamination.
         """
         self.contamination = contamination
         self.isolation_forest = IsolationForest(
@@ -27,11 +32,14 @@ class AnomalyDetector:
             novelty=True,
             n_neighbors=20
         )
-        self.trained = False
+        # Note: self.trained flag is per-instance, which is correct
+        # since each instance should only handle one device
+        self.trained_isolation_forest = False
+        self.trained_lof = False
 
     def get_recent_metrics(self, device_id: int, hours: int = 24) -> List[Dict]:
         """Get metrics for a device from the last N hours"""
-        conn = sqlite3.connect(DB_NAME)
+        conn = sqlite3.connect(DB_PATH)
         conn.row_factory = sqlite3.Row
         c = conn.cursor()
 
@@ -40,7 +48,8 @@ class AnomalyDetector:
         rows = c.execute('''
                          SELECT *
                          FROM metrics_logs
-                         WHERE device_id = ? AND timestamp > ?
+                         WHERE device_id = ?
+                           AND timestamp > ?
                          ORDER BY timestamp ASC
                          ''', (device_id, cutoff_time)).fetchall()
 
@@ -98,7 +107,7 @@ class AnomalyDetector:
                 anomalies.append({
                     'timestamp': metric['timestamp'],
                     'device_id': metric['device_id'],
-                    'method': 'z-score',
+                    'method': 'z_score',
                     'anomalous_metrics': anomalous_metrics,
                     'severity': 'high' if max(m['z_score'] for m in anomalous_metrics) > 4 else 'medium'
                 })
@@ -162,17 +171,19 @@ class AnomalyDetector:
 
         try:
             if method == 'isolation_forest':
-                if not self.trained:
+                # Train if not already trained for this instance
+                if not self.trained_isolation_forest:
                     self.isolation_forest.fit(features)
+                    self.trained_isolation_forest = True
                 predictions = self.isolation_forest.predict(features)
                 scores = self.isolation_forest.score_samples(features)
             else:  # LOF
-                if not self.trained:
+                # Train if not already trained for this instance
+                if not self.trained_lof:
                     self.lof.fit(features)
+                    self.trained_lof = True
                 predictions = self.lof.predict(features)
                 scores = self.lof.score_samples(features)
-
-            self.trained = True
 
             anomalies = []
             for i, (pred, score) in enumerate(zip(predictions, scores)):
@@ -201,11 +212,18 @@ class AnomalyDetector:
     def detect_all_anomalies(self, device_id: int) -> Dict[str, List[Dict]]:
         """
         Run all anomaly detection methods and return combined results
+
+        IMPORTANT: This detector instance should only be used for ONE device.
         """
         metrics = self.get_recent_metrics(device_id, hours=24)
 
         if not metrics:
-            return {}
+            return {
+                'z_score': [],
+                'moving_average': [],
+                'isolation_forest': [],
+                'lof': []
+            }
 
         results = {
             'z_score': self.detect_zscore_anomalies(metrics),
@@ -245,51 +263,22 @@ class AnomalyDetector:
 
 def save_anomaly_to_db(anomaly: Dict):
     """Save detected anomaly to database for logging"""
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
     # Create anomalies table if it doesn't exist
     c.execute('''
               CREATE TABLE IF NOT EXISTS anomalies
               (
-                  id
-                  INTEGER
-                  PRIMARY
-                  KEY
-                  AUTOINCREMENT,
-                  timestamp
-                  TEXT
-                  NOT
-                  NULL,
-                  device_id
-                  INTEGER
-                  NOT
-                  NULL,
-                  detection_method
-                  TEXT
-                  NOT
-                  NULL,
-                  severity
-                  TEXT
-                  NOT
-                  NULL,
-                  details
-                  TEXT
-                  NOT
-                  NULL,
-                  acknowledged
-                  INTEGER
-                  DEFAULT
-                  0,
-                  FOREIGN
-                  KEY
-              (
-                  device_id
-              ) REFERENCES devices
-              (
-                  id
+                  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                  timestamp        TEXT    NOT NULL,
+                  device_id        INTEGER NOT NULL,
+                  detection_method TEXT    NOT NULL,
+                  severity         TEXT    NOT NULL,
+                  details          TEXT    NOT NULL,
+                  acknowledged     INTEGER DEFAULT 0,
+                  FOREIGN KEY (device_id) REFERENCES devices (id)
               )
-                  )
               ''')
 
     import json
@@ -310,7 +299,7 @@ def save_anomaly_to_db(anomaly: Dict):
 
 def get_all_anomalies(limit: int = 100, device_id: int = None):
     """Retrieve anomalies from database"""
-    conn = sqlite3.connect(DB_NAME)
+    conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     c = conn.cursor()
 
@@ -319,13 +308,15 @@ def get_all_anomalies(limit: int = 100, device_id: int = None):
                          SELECT *
                          FROM anomalies
                          WHERE device_id = ?
-                         ORDER BY id DESC LIMIT ?
+                         ORDER BY id DESC
+                         LIMIT ?
                          ''', (device_id, limit)).fetchall()
     else:
         rows = c.execute('''
                          SELECT *
                          FROM anomalies
-                         ORDER BY id DESC LIMIT ?
+                         ORDER BY id DESC
+                         LIMIT ?
                          ''', (limit,)).fetchall()
 
     conn.close()
