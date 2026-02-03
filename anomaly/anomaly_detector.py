@@ -30,7 +30,7 @@ class AnomalyDetector:
         self.lof = LocalOutlierFactor(
             contamination=contamination,
             novelty=True,
-            n_neighbors=20
+            n_neighbors=10
         )
         # Note: self.trained flag is per-instance, which is correct
         # since each instance should only handle one device
@@ -69,7 +69,7 @@ class AnomalyDetector:
             ])
         return np.array(features)
 
-    def detect_zscore_anomalies(self, metrics: List[Dict], threshold: float = 3.0) -> List[Dict]:
+    def detect_zscore_anomalies(self, metrics: List[Dict], threshold: float = 2.0) -> List[Dict]:
         """
         Detect anomalies using Z-score method
         Returns list of anomalies with details
@@ -115,8 +115,8 @@ class AnomalyDetector:
         return anomalies
 
     def detect_moving_average_anomalies(self, metrics: List[Dict],
-                                        window: int = 10,
-                                        threshold: float = 2.0) -> List[Dict]:
+                                        window: int = 15,
+                                        threshold: float = 1.0) -> List[Dict]:
         """
         Detect anomalies using moving average and standard deviation
         """

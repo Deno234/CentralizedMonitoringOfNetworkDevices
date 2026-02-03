@@ -47,7 +47,7 @@ with st.sidebar:
 
     # Auto refresh
     st_autorefresh = st.checkbox("Auto-refresh", value=True)
-    refresh_interval = st.slider("Refresh interval (seconds)", 5, 60, 10)
+    refresh_interval = st.slider("Refresh interval (seconds)", 5, 60, 60)
 
     st.divider()
 
