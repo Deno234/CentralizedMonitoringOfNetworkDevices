@@ -86,47 +86,41 @@ def get_disk_usage():
 
 
 
+_prev_cpu = None
+
 def get_cpu_usage():
+    global _prev_cpu
     try:
-        cmd = "adb shell top -n 1 -b | head -n 10"
-        result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+        result = subprocess.run(
+            ["adb", "shell", "cat", "/proc/stat"],
+            capture_output=True, text=True, timeout=3
+        )
 
-        for line in result.stdout.split('\n'):
-            l = line.lower()
-            if '%cpu' in l and 'idle' in l:
-                parts = l.split()
+        line = result.stdout.splitlines()[0]
+        parts = list(map(int, line.split()[1:]))
 
-                total_cpu = None
-                idle_val = None
+        idle = parts[3] + parts[4]          # idle + iowait
+        total = sum(parts)
 
-                # nađi npr. '800%cpu'
-                for p in parts:
-                    if '%cpu' in p:
-                        num = p.replace('%cpu', '').strip()
-                        if num.endswith('%'):
-                            num = num[:-1]
-                        total_cpu = float(num)
-                        break
+        if _prev_cpu is None:
+            _prev_cpu = (total, idle)
+            return 0.0
 
-                # nađi npr. '679%idle'
-                for p in parts:
-                    if 'idle' in p:
-                        num = p.replace('%idle', '').strip()
-                        if num.endswith('%'):
-                            num = num[:-1]
-                        idle_val = float(num)
-                        break
+        prev_total, prev_idle = _prev_cpu
+        total_diff = total - prev_total
+        idle_diff = idle - prev_idle
 
-                if total_cpu is None or idle_val is None:
-                    return 0.0
+        _prev_cpu = (total, idle)
 
-                cores = max(1.0, total_cpu / 100.0)
-                usage = (total_cpu - idle_val) / cores
-                return round(usage, 2)
+        if total_diff == 0:
+            return 0.0
 
+        usage = (1 - idle_diff / total_diff) * 100
+        return round(usage, 2)
+
+    except:
         return 0.0
-    except Exception:
-        return 0.0
+
 
 def get_network_stats():
     try:
